@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hazelcast-runtime
+description: Standalone OSS Hazelcast 5.x cluster (Kubernetes API discovery)
+type: application
+version: 0.1.0
+appVersion: "5.5.0"

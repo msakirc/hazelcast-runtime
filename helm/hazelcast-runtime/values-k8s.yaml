@@ -1,0 +1,8 @@
+image: { repository: hazelcast-runtime, tag: "5.5.0" }
+clusterName: prod-hz
+replicaCount: 5
+hazelcast: { backupCount: 1, sbpMinClusterSize: 3, partitionCount: 271, heartbeatSeconds: 60 }
+networkPolicy:
+  enabled: true
+  clientNamespaces: ["monolith"]     # phase 3: monolith namespace
+externalClient: { enabled: false }

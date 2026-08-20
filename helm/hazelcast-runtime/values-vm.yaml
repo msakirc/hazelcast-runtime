@@ -1,0 +1,10 @@
+# VMs run the image directly (systemd/docker), NOT Helm. Example unit env:
+#   HZ_PROFILE=vm
+#   HZ_CLUSTER_NAME=prod-hz
+#   HZ_MEMBERLIST=10.0.0.11,10.0.0.12,10.0.0.13,10.0.0.14,10.0.0.15
+#   HZ_SBP_MIN=3
+#   HZ_BACKUP_COUNT=1
+# This file exists so the three profiles are discoverable in one place.
+clusterName: prod-hz
+replicaCount: 5
+hazelcast: { sbpMinClusterSize: 3 }

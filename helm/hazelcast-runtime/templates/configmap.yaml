@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-effective
+  labels: {{- include "hzr.labels" . | nindent 4 }}
+data:
+  profile: "k8s"
+  clusterName: {{ .Values.clusterName | quote }}
+  sbpMinClusterSize: {{ .Values.hazelcast.sbpMinClusterSize | quote }}
+  partitionCount: {{ .Values.hazelcast.partitionCount | quote }}
+  terminationGracePeriodSeconds: {{ include "hzr.grace" . | quote }}

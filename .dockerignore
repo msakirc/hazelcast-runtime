@@ -1,0 +1,6 @@
+docs/
+helm/
+test/
+.git/
+*.md
+Makefile

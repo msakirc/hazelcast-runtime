@@ -1,0 +1,21 @@
+services:
+  hz1: &hz
+    image: hazelcast-runtime:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      HZ_PROFILE: local
+      HZ_CLUSTER_NAME: hz-local
+      HZ_MEMBERLIST: "hz1,hz2,hz3"
+      HZ_SBP_MIN: "2"
+      HZ_BACKUP_COUNT: "1"
+      HZ_REST_DATA: "true"
+    networks: [hznet]
+  hz2:
+    <<: *hz
+    ports: ["5701:5701"]
+  hz3:
+    <<: *hz
+networks:
+  hznet: {}

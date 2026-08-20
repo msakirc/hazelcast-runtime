@@ -1,0 +1,39 @@
+image:
+  repository: hazelcast-runtime
+  tag: local
+  pullPolicy: IfNotPresent
+
+clusterName: prod-hz
+replicaCount: 5
+
+hazelcast:
+  backupCount: 1
+  sbpMinClusterSize: 3        # majority of 5
+  partitionCount: 271
+  heartbeatSeconds: 60
+
+resources:
+  requests: { cpu: "1", memory: "6Gi" }
+  limits:   { cpu: "2", memory: "6Gi" }   # heap = 70% via MaxRAMPercentage
+
+# graceful shutdown budget: grace >= preStop(P) + graceful.max.wait(G) + buffer
+shutdown:
+  preStopMaxSeconds: 30       # P
+  gracefulMaxWaitSeconds: 90  # G
+  bufferSeconds: 30
+# terminationGracePeriodSeconds computed in _helpers as P+G+buffer
+
+rbac:
+  create: true
+  clusterRoleForNodes: false  # true only if zone-aware / NodePort public discovery
+
+externalClient:
+  enabled: false              # phase-2: per-pod LoadBalancer + public-address
+  serviceType: LoadBalancer
+
+networkPolicy:
+  enabled: true
+  clientNamespaces: []        # namespaces allowed to reach 5701
+  clientCidrs: []
+
+topologySpreadZones: true     # soft zone spread

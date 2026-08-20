@@ -1,0 +1,52 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-role
+  labels: {{- include "hzr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-rb
+  labels: {{- include "hzr.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hzr.sa" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.rbac.clusterRoleForNodes }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-nodes-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-nodes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hzr.sa" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

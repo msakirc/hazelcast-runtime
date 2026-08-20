@@ -1,0 +1,28 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-netpol
+  labels: {{- include "hzr.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}   # member-to-member
+      {{- range .Values.networkPolicy.clientNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      {{- end }}
+      {{- range .Values.networkPolicy.clientCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+      {{- end }}
+      ports:
+        - { protocol: TCP, port: 5701 }
+{{- end }}

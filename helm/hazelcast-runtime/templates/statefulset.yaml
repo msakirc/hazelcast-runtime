@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "hzr.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "hzr.headless" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels: {{- include "hzr.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "hzr.sa" . }}
+      terminationGracePeriodSeconds: {{ include "hzr.grace" . }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+      {{- if .Values.topologySpreadZones }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- end }}
+      containers:
+        - name: hazelcast
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: hazelcast, containerPort: 5701 }
+          env:
+            - { name: HZ_PROFILE, value: "k8s" }
+            - { name: HZ_CLUSTER_NAME, value: "{{ required "clusterName required" .Values.clusterName }}" }
+            - { name: HZ_K8S_SERVICE_NAME, value: "{{ include "hzr.headless" . }}" }
+            - { name: HZ_K8S_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+            - { name: HZ_SBP_MIN, value: "{{ .Values.hazelcast.sbpMinClusterSize }}" }
+            - { name: HZ_BACKUP_COUNT, value: "{{ .Values.hazelcast.backupCount }}" }
+            - { name: HZ_PARTITION_COUNT, value: "{{ .Values.hazelcast.partitionCount }}" }
+            - { name: HZ_HEARTBEAT_SECONDS, value: "{{ .Values.hazelcast.heartbeatSeconds }}" }
+            - name: JAVA_OPTS
+              value: >-
+                -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70
+                -Dhazelcast.partition.count={{ .Values.hazelcast.partitionCount }}
+                -Dhazelcast.shutdownhook.policy=GRACEFUL
+                -Dhazelcast.graceful.shutdown.max.wait={{ .Values.shutdown.gracefulMaxWaitSeconds }}
+                -Dhazelcast.max.no.heartbeat.seconds={{ .Values.hazelcast.heartbeatSeconds }}
+                -Dhazelcast.diagnostics.enabled=true
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >-
+                    end=$(( $(date +%s) + {{ .Values.shutdown.preStopMaxSeconds }} ));
+                    while [ $(date +%s) -lt $end ]; do
+                    code=$(wget -q -O /dev/null -S http://127.0.0.1:5701/hazelcast/health/cluster-safe 2>&1 | awk '/HTTP\//{print $2}' | tail -1);
+                    [ "$code" = "200" ] && exit 0; sleep 3; done; exit 0
+          readinessProbe:
+            httpGet: { path: /hazelcast/health/ready, port: 5701 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /hazelcast/health/node-state, port: 5701 }
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.resources | nindent 12 }}

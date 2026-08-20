@@ -1,0 +1,19 @@
+{{- if .Values.externalClient.enabled }}
+{{- range $i := until (int .Values.replicaCount) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-ext-{{ $i }}
+  labels: {{- include "hzr.labels" $ | nindent 4 }}
+  annotations:
+    # cloud-specific: reserve a static IP and set as pod public-address (see connection-guide.md)
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+spec:
+  type: {{ $.Values.externalClient.serviceType }}
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ $.Release.Name }}-{{ $i }}
+  ports:
+    - { name: hazelcast, port: 5701, targetPort: 5701 }
+---
+{{- end }}
+{{- end }}

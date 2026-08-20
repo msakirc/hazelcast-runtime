@@ -1,0 +1,10 @@
+image: { repository: hazelcast-runtime, tag: local, pullPolicy: Never }
+clusterName: hz-local
+replicaCount: 3
+hazelcast: { backupCount: 1, sbpMinClusterSize: 2, partitionCount: 271, heartbeatSeconds: 60 }
+resources:
+  requests: { cpu: "250m", memory: "1Gi" }
+  limits:   { cpu: "500m", memory: "1Gi" }
+shutdown: { preStopMaxSeconds: 10, gracefulMaxWaitSeconds: 20, bufferSeconds: 10 }
+networkPolicy: { enabled: false }
+topologySpreadZones: false

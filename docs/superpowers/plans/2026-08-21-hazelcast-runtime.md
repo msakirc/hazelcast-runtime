@@ -161,6 +161,8 @@ Create `test/render_test.sh`:
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# point the renderer at the repo template (default HZ_TPL is the in-container path)
+export HZ_TPL="config/hazelcast.yaml.tpl"
 export HZ_PROFILE=local HZ_CLUSTER_NAME=hz-local HZ_MEMBERLIST="a,b,c" \
        HZ_SBP_MIN=2 HZ_BACKUP_COUNT=1 HZ_PARTITION_COUNT=271 HZ_REST_DATA=true
 OUT="$(bash docker/entrypoint.sh --render-only)"
@@ -252,7 +254,8 @@ export HZ_REST_DATA="${HZ_REST_DATA:-false}"
 export HZ_K8S_SERVICE_NAME="${HZ_K8S_SERVICE_NAME:-hazelcast-runtime}"
 export HZ_K8S_NAMESPACE="${HZ_K8S_NAMESPACE:-default}"
 TPL="${HZ_TPL:-/opt/hazelcast/config/hazelcast.yaml.tpl}"
-OUT="${HZ_OUT:-/opt/hazelcast/config/hazelcast.yaml}"
+# Render to a path the non-root `hazelcast` user can write (config dir is root-owned).
+OUT="${HZ_OUT:-/tmp/hazelcast.yaml}"
 
 # ---- build JOIN_BLOCK per profile ----
 if [ "$HZ_PROFILE" = "k8s" ]; then
@@ -348,7 +351,10 @@ ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70 \
 -Dhazelcast.partition.count=271 \
 -Dhazelcast.shutdownhook.policy=GRACEFUL \
 -Dhazelcast.graceful.shutdown.max.wait=90 \
--Dhazelcast.diagnostics.enabled=true"
+-Dhazelcast.diagnostics.enabled=true \
+-Dhazelcast.diagnostics.directory=/tmp"
+# diagnostics.directory MUST be a path the non-root `hazelcast` user can write;
+# default /opt/hazelcast is root-owned -> FileNotFoundException spam on every member.
 
 ENTRYPOINT ["/opt/hazelcast/entrypoint.sh"]
 ```
@@ -478,9 +484,18 @@ MAP=smoke; KEY=k1; VAL=hello-1m
 
 pass(){ echo "PASS: $1"; }
 fail(){ echo "FAIL: $1"; docker compose logs --tail=40 || true; exit 1; }
+# poll cluster-size until it equals $1 (up to ~40s) — failure detection isn't instant;
+# a fixed `sleep` races the cluster's member-removal + repartition.
+wait_size(){
+  for _ in $(seq 1 20); do
+    [ "$(curl -s $BASE/hazelcast/health/cluster-size 2>/dev/null)" = "$1" ] && return 0
+    sleep 2
+  done
+  return 1
+}
 
 # 1. cluster formed
-[ "$(curl -s $BASE/hazelcast/health/cluster-size)" = "3" ] || fail "cluster not size 3"
+wait_size 3 || fail "cluster not size 3"
 pass "cluster size 3"
 
 # 2. put/get via REST DATA group
@@ -491,8 +506,7 @@ pass "put/get roundtrip"
 
 # 3. backup survival: kill one member, value must persist (backup-count 1, min-size 2)
 docker compose stop hz1 >/dev/null
-sleep 8
-[ "$(curl -s $BASE/hazelcast/health/cluster-size)" = "2" ] || fail "size not 2 after kill"
+wait_size 2 || fail "size not 2 after kill"
 GOT2="$(curl -s "$BASE/hazelcast/rest/maps/$MAP/$KEY")"
 [ "$GOT2" = "$VAL" ] || fail "value lost after member kill: '$GOT2'"
 pass "backup survived single member loss"
@@ -502,7 +516,7 @@ pass "backup survived single member loss"
 #    Assert a SPECIFIC rejection (>=500), not merely "not 200", so a swallowed
 #    error can't pass for the wrong reason; then prove the key was NOT written.
 docker compose stop hz3 >/dev/null
-sleep 8
+wait_size 1 || fail "size not 1 after second kill"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/hazelcast/rest/maps/$MAP/k2" -d "nope")
 [ "$CODE" -ge 500 ] 2>/dev/null || fail "below-quorum write must be rejected 5xx (got $CODE)"
 READBACK="$(curl -s "$BASE/hazelcast/rest/maps/$MAP/k2")"
