@@ -47,7 +47,6 @@ hazelcast-runtime/
       pdb.yaml
       networkpolicy.yaml
       NOTES.txt
-      tests/test-cluster-safe.yaml   # `helm test` hook: curl cluster-safe
   docs/
     connection-guide.md         # monolith client config, 3 phases, resilience, stampede, failure modes
   Makefile                      # build/up/smoke/lint/template/clean
@@ -69,10 +68,10 @@ hazelcast-runtime/
 Run:
 ```bash
 docker version --format '{{.Server.Version}}'
-docker pull hazelcast/hazelcast:5.5.2 || docker pull hazelcast/hazelcast:5.5.6
-docker run --rm hazelcast/hazelcast:5.5.2 hz -V 2>/dev/null | head -3
+docker pull hazelcast/hazelcast:5.5.0 || docker pull hazelcast/hazelcast:5.5
+docker run --rm hazelcast/hazelcast:5.5.0 hz -V 2>/dev/null | head -3
 ```
-Expected: server version prints; image pulls; `hz -V` prints a 5.5.x version. Record the exact tag that pulled as `<PINNED>` (used everywhere below; default `5.5.2`). If neither tag exists, list tags via `curl -s 'https://hub.docker.com/v2/repositories/hazelcast/hazelcast/tags?page_size=50' | grep -o '"name":"5\.[0-9.]*"'` and pick the newest 5.5.x/5.x stable.
+Expected: server version prints; image pulls; `hz -V` prints a 5.5.x version. **Only `5.5.0` (and moving tag `5.5`) are published as public OSS images — 5.5.1+ point patches 404.** Record the exact tag as `<PINNED>` (default `5.5.0`). To see all tags: `curl -s 'https://hub.docker.com/v2/repositories/hazelcast/hazelcast/tags?page_size=50' | grep -o '"name":"5\.[0-9.]*"'` and pick the newest published 5.x.
 
 - [ ] **Step 2: Write `.dockerignore`**
 
@@ -85,10 +84,24 @@ test/
 Makefile
 ```
 
+- [ ] **Step 2b: Write `.gitattributes` (Windows host — force LF on scripts)**
+
+Repo is authored on Windows/Git Bash. CRLF in `entrypoint.sh` breaks the Linux
+container shebang (`bash\r: not found`). Force LF:
+```
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+Makefile text eol=lf
+```
+(The Dockerfile also strips CRLF defensively — belt and suspenders.)
+
 - [ ] **Step 3: Write `Makefile`**
 
 ```makefile
-PINNED ?= 5.5.2
+PINNED ?= 5.5.0
 IMAGE  ?= hazelcast-runtime:local
 
 .PHONY: build up down smoke lint template clean
@@ -129,7 +142,7 @@ See `docs/connection-guide.md` for wiring the monolith and
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .dockerignore README.md Makefile
+git add .dockerignore .gitattributes README.md Makefile
 git commit -m "chore: scaffold hazelcast-runtime repo + pinned version"
 ```
 
@@ -284,7 +297,9 @@ fi
 
 echo "$RENDERED" > "$OUT"
 echo "[entrypoint] profile=$HZ_PROFILE cluster=$HZ_CLUSTER_NAME sbp-min=$HZ_SBP_MIN rest-data=$HZ_REST_DATA"
-exec hz -c "$OUT" start
+# NOTE: `hz` is a picocli app; `-c/--config` belongs to the `start` SUBCOMMAND and
+# MUST come AFTER `start` (hz -c <f> start fails "Unknown options: '-c'").
+exec hz start -c "$OUT"
 ```
 Make executable: `chmod +x docker/entrypoint.sh`.
 
@@ -311,19 +326,20 @@ git commit -m "feat: env-driven hazelcast config template + entrypoint renderer"
 - [ ] **Step 1: Write `docker/Dockerfile`**
 
 ```dockerfile
-ARG HZ_VERSION=5.5.2
+ARG HZ_VERSION=5.5.0
 FROM hazelcast/hazelcast:${HZ_VERSION}
 
 USER root
-# envsubst (gettext) for config rendering
-RUN which envsubst >/dev/null 2>&1 || \
-    (command -v apk >/dev/null && apk add --no-cache gettext) || \
-    (command -v microdnf >/dev/null && microdnf install -y gettext) || \
-    (command -v dnf >/dev/null && dnf install -y gettext) || true
+# envsubst (gettext) for config rendering. Base image is Alpine (apk).
+# HARD-FAIL if it can't be installed — a missing envsubst = silent-broken image
+# (every container would die at `envsubst < tpl` under set -e). No `|| true`.
+RUN apk add --no-cache gettext && command -v envsubst
 
 COPY config/hazelcast.yaml.tpl /opt/hazelcast/config/hazelcast.yaml.tpl
 COPY docker/entrypoint.sh /opt/hazelcast/entrypoint.sh
-RUN chmod +x /opt/hazelcast/entrypoint.sh
+# Strip any CRLF (repo authored on Windows) so the container shebang/exec work,
+# then make executable.
+RUN sed -i 's/\r$//' /opt/hazelcast/entrypoint.sh && chmod +x /opt/hazelcast/entrypoint.sh
 USER hazelcast
 
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70 \
@@ -334,11 +350,11 @@ ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70 \
 
 ENTRYPOINT ["/opt/hazelcast/entrypoint.sh"]
 ```
-Note: if the pinned base image lacks a package manager for the `hazelcast` user, `envsubst` is usually already present in the image (gettext base). Step 3 verifies; if absent, switch the base to `-slim` variant that includes it or vendor a tiny `envsubst` static — verify at build.
+Note: base image `hazelcast/hazelcast:5.5.0` is Alpine and does **not** ship `envsubst`; the `RUN apk add gettext && command -v envsubst` line installs it and hard-fails the build if it can't (no silent-broken image). The custom `ENTRYPOINT` correctly overrides the base image's. The image already defines `JAVA_OPTS_DEFAULT` (includes `-XX:MaxRAMPercentage=80.0`); our `JAVA_OPTS` is appended after it, and later JVM args win, so `70` takes effect — **verify** in Step 4 with `docker exec hz1 sh -c 'cat /proc/1/cmdline | tr "\0" " "' | grep -o 'MaxRAMPercentage=[0-9.]*'` (expect the last one = 70).
 
 - [ ] **Step 2: Build**
 
-Run: `docker build --build-arg HZ_VERSION=5.5.2 -t hazelcast-runtime:local -f docker/Dockerfile .`
+Run: `docker build --build-arg HZ_VERSION=5.5.0 -t hazelcast-runtime:local -f docker/Dockerfile .`
 Expected: build succeeds.
 
 - [ ] **Step 3: Verify render works inside the image**
@@ -357,15 +373,19 @@ Run:
 docker run -d --name hz1 -p 5701:5701 \
   -e HZ_PROFILE=local -e HZ_CLUSTER_NAME=hz-local -e HZ_MEMBERLIST=127.0.0.1 \
   -e HZ_SBP_MIN=1 -e HZ_REST_DATA=true hazelcast-runtime:local
-sleep 20
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5701/hazelcast/health/ready
+# cold start on Windows Docker Desktop (image pull + JVM) can be slow; poll, don't fixed-sleep
+for i in $(seq 1 40); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5701/hazelcast/health/ready)" = "200" ] && break
+  sleep 2
+done
+curl -s -o /dev/null -w 'ready=%{http_code}\n' http://localhost:5701/hazelcast/health/ready
 ```
-Expected: `200` (single member, `HZ_SBP_MIN=1` so it is ready). Then:
+Expected: `ready=200` (single member, `HZ_SBP_MIN=1` so it is ready). Then:
 ```bash
 curl -s http://localhost:5701/hazelcast/health/node-state; echo
 docker rm -f hz1
 ```
-Expected: `ACTIVE`. If `/health/ready` 404s, REST enable failed — inspect `docker logs hz1` and the rendered `/opt/hazelcast/config/hazelcast.yaml`.
+Expected: `"ACTIVE"` (note: `node-state` returns a **quoted** JSON string; any exact-match assertion must include the quotes. `cluster-size` by contrast returns a bare integer). If `/health/ready` 404s, REST enable failed — inspect `docker logs hz1` and the rendered `/opt/hazelcast/config/hazelcast.yaml`.
 
 - [ ] **Step 5: Commit**
 
@@ -491,8 +511,14 @@ Make executable: `chmod +x test/smoke.sh`.
 - [ ] **Step 2: Run it (fails if REST DATA endpoint differs on pinned version)**
 
 Run: `bash test/smoke.sh`
-Expected: `ALL SMOKE TESTS PASSED`.
-Fallback: if the legacy `/hazelcast/rest/maps/...` endpoint is removed in the pinned 5.x, replace steps 2–4 put/get with the Hazelcast CLC: `docker run --rm --network hazelcast-runtime_hznet hazelcast/clc:latest -c '{"cluster":{"name":"hz-local","address":"hz2:5701"}}' map set -m smoke k1 hello-1m` and `... map get -m smoke k1`. Keep the kill/quorum logic identical. Verify which path works on the pinned image and keep that one.
+Expected: `ALL SMOKE TESTS PASSED`. (The legacy `/hazelcast/rest/maps/...` endpoint IS present in 5.5.0 under the `DATA` group — happy path works. Note it is deprecated-for-removal in 7.0.)
+Fallback (only if the pinned image lacks the DATA/`/maps` endpoint): use the Hazelcast CLC. There is **no `hazelcast/clc` image**; install the binary (`brew install hazelcast/hz/clc` or the install script) and run against the published member:
+```bash
+clc config add local cluster.name=hz-local cluster.address=localhost:5701
+clc -c local map set -n smoke k1 hello-1m
+clc -c local map get -n smoke k1        # -> hello-1m
+```
+Flag is `-n/--name` (not `-m`); `-c` takes a named profile, not inline JSON. Keep the kill/quorum logic identical. Verify which path works on the pinned image and keep it.
 
 - [ ] **Step 3: Wire into Makefile (already has `smoke` target) and commit**
 
@@ -517,7 +543,7 @@ name: hazelcast-runtime
 description: Standalone OSS Hazelcast 5.x cluster (Kubernetes API discovery)
 type: application
 version: 0.1.0
-appVersion: "5.5.2"
+appVersion: "5.5.0"
 ```
 
 - [ ] **Step 2: Write `values.yaml` (prod-safe defaults)**
@@ -832,6 +858,8 @@ data:
 
 - [ ] **Step 12: Run `helm lint`**
 
+Preflight: `command -v helm || echo "INSTALL helm 3 first (choco install kubernetes-helm)"`.
+If helm is absent, install it before Tasks 6–7 (their assertions require `helm template`).
 Run: `helm lint helm/hazelcast-runtime`
 Expected: `1 chart(s) linted, 0 chart(s) failed`.
 
@@ -852,7 +880,7 @@ git commit -m "feat: helm chart — statefulset, k8s-API RBAC, PDB, netpol, grac
 - [ ] **Step 1: Write `values-k8s.yaml`** (phase 3 in-cluster; phase 2 toggle documented)
 
 ```yaml
-image: { repository: hazelcast-runtime, tag: "5.5.2" }
+image: { repository: hazelcast-runtime, tag: "5.5.0" }
 clusterName: prod-hz
 replicaCount: 5
 hazelcast: { backupCount: 1, sbpMinClusterSize: 3, partitionCount: 271, heartbeatSeconds: 60 }
