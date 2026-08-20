@@ -169,7 +169,7 @@ echo "$OUT" | grep -q 'HEALTH_CHECK' || { echo "FAIL: no HEALTH_CHECK"; exit 1; 
 echo "$OUT" | grep -q 'DATA:' || { echo "FAIL: DATA gate missing when enabled"; exit 1; }
 echo "$OUT" | grep -q 'split-brain-protection' || { echo "FAIL: no SBP"; exit 1; }
 echo "$OUT" | grep -q 'minimum-cluster-size: 2' || { echo "FAIL: SBP min wrong"; exit 1; }
-echo "$OUT" | grep -q 'member: "a"' || { echo "FAIL: memberlist not expanded"; exit 1; }
+echo "$OUT" | grep -qE '^\s*- "a"$' || { echo "FAIL: memberlist not expanded as plain strings"; exit 1; }
 echo "$OUT" | grep -q 'partition-count: 271' || { echo "FAIL: partition-count"; exit 1; }
 # k8s profile picks kubernetes join, no DATA
 export HZ_PROFILE=k8s HZ_REST_DATA=false HZ_K8S_SERVICE_NAME=hz-hl HZ_K8S_NAMESPACE=default
@@ -267,7 +267,9 @@ else
   IFS=',' read -ra ARR <<< "$HZ_MEMBERLIST"
   for m in "${ARR[@]}"; do
     m="$(echo "$m" | xargs)"   # trim
-    MEMBERS="${MEMBERS}          - member: \"${m}\"
+    # Hazelcast YAML member-list is a PLAIN sequence of address strings
+    # (- "host"), NOT `- member: host` maps (that is the XML form).
+    MEMBERS="${MEMBERS}          - \"${m}\"
 "
   done
   export JOIN_BLOCK="      multicast:
@@ -495,12 +497,21 @@ GOT2="$(curl -s "$BASE/hazelcast/rest/maps/$MAP/$KEY")"
 [ "$GOT2" = "$VAL" ] || fail "value lost after member kill: '$GOT2'"
 pass "backup survived single member loss"
 
-# 4. quorum: drop below minimum-cluster-size (2) -> writes rejected
+# 4. quorum: drop below minimum-cluster-size (2) -> writes rejected with 5xx
+#    (protect-on: WRITE throws SplitBrainProtectionException; legacy REST surfaces 5xx).
+#    Assert a SPECIFIC rejection (>=500), not merely "not 200", so a swallowed
+#    error can't pass for the wrong reason; then prove the key was NOT written.
 docker compose stop hz3 >/dev/null
 sleep 8
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/hazelcast/rest/maps/$MAP/k2" -d "nope")
-[ "$CODE" != "200" ] || fail "write should be rejected below quorum (got $CODE)"
-pass "quorum blocked write below minimum-cluster-size"
+[ "$CODE" -ge 500 ] 2>/dev/null || fail "below-quorum write must be rejected 5xx (got $CODE)"
+READBACK="$(curl -s "$BASE/hazelcast/rest/maps/$MAP/k2")"
+[ -z "$READBACK" ] || fail "below-quorum write leaked a value: '$READBACK'"
+pass "quorum blocked write below minimum-cluster-size (5xx + no value)"
+# If CODE came back 200/204 here, the legacy REST bridge is bypassing the per-map
+# split-brain-protection-ref. In that case switch THIS assertion to the CLC path
+# (client protocol honors quorum): `clc -c local map set -n smoke k2 nope` must
+# fail with SplitBrainProtectionException. Determine empirically on the pinned image.
 
 # restore
 docker compose start hz1 hz3 >/dev/null
