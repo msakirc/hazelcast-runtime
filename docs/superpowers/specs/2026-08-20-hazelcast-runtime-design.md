@@ -126,8 +126,11 @@ map:
     time-to-live-seconds: <per-map>
     split-brain-protection-ref: sbp-write
 ```
-`partition-count: 271` (default; correct up to ~25–40 members). Fixed at cluster
-creation, must match on every member **and** client — set now, never drift.
+`partition-count: 271` (default). The real driver is **per-partition data size**
+(target ≤ ~100 MB/partition), not member count: at ~5 GB / 271 ≈ 18 MB/partition
+there is ample room (fine to ~25–30 GB). Increase only when per-partition size
+approaches ~100 MB. Fixed at cluster creation, must match on every member **and**
+client, cannot change on a live cluster (needs full restart) — set now, never drift.
 
 ### JVM / GC (explicit, not defaulted)
 - Pin the JDK (matches the pinned Hazelcast base image).
@@ -194,12 +197,20 @@ signatures in the connection guide.
 - **Split-brain protection** as above; minority partition rejects writes.
 - **Graceful rolling restarts — proven invariant, not asserted.** PDB + anti-affinity
   alone are insufficient with `backup-count: 1`. Required together:
-  - `GRACEFUL` shutdown policy + `graceful.shutdown.max.wait` ≤ `terminationGracePeriodSeconds`.
+  - `GRACEFUL` shutdown policy + `hazelcast.graceful.shutdown.max.wait=<G>`.
   - **preStop hook polls `/hazelcast/health/cluster-safe` == 200** before the pod is
     allowed to terminate — i.e. terminate only when `partitionMovementComplete &&
-    clusterSafe`.
-  - StatefulSet `OrderedReady` / `RollingUpdate`, one member at a time (`maxUnavailable: 1`),
-    PDB, `requiredDuringScheduling` anti-affinity.
+    clusterSafe`. The poll is **bounded** by an explicit max `<P>` (never let it eat
+    the whole grace period).
+  - ⚠️ **Time budget is additive.** In k8s the preStop hook runs first, *then* SIGTERM
+    fires GRACEFUL migration — both consume `terminationGracePeriodSeconds`. The
+    correct invariant is:
+    `terminationGracePeriodSeconds ≥ P (preStop max) + G (graceful.shutdown.max.wait) + buffer`.
+    Writing only `G ≤ grace` omits P and lets kubelet SIGKILL mid-migration →
+    double-fault data loss with backup-count 1. Helm values enforce this sum + a
+    render-time check.
+  - StatefulSet `RollingUpdate`, one member at a time (`maxUnavailable: 1`), PDB,
+    `requiredDuringScheduling` anti-affinity (hostname).
 - ⚠️ **GC / heap headroom.** On-heap storage; per-entry overhead (metadata, near-cache,
   backups, op buffers) means 5 KB/user of payload consumes materially more heap. Keep
   heap ≤ ~8 GB/member and **scale out**, not up. Reserve headroom (don't run cache to
@@ -207,7 +218,7 @@ signatures in the connection guide.
 - **Migration throttling.** Scale-out migrates ~1/N of 271 partitions over the network
   while serving traffic; cap concurrent migrations (`hazelcast.partition.migration.*`)
   and treat scale-out as a planned, throttled op. Do **not** inflate partition-count
-  "to be safe" — 271 is right until ~25–40 members.
+  "to be safe" — raise it only when per-partition size nears ~100 MB (see Map defaults).
 
 ### ⚠️ Cold-start DB stampede (biggest 1M-user risk of "rebuild from DB")
 Empty grid after full restart → 1M users' read-through misses hammer the DB at once,
@@ -232,8 +243,10 @@ The guide specifies, per phase:
   and an explicit note on which maps are safe for near-cache (stale-read risk for
   session/auth-like data). Estimate M×N (app instances × members) connection + event
   fan-out load and set member socket/thread limits.
-- **Backpressure**: enable `hazelcast.backpressure.enabled` + max concurrent
-  invocations so a smart client can't OOM a member with queued ops.
+- **Backpressure** (two distinct mechanisms): **member-side** `hazelcast.backpressure.enabled`
+  set on the **server** (governs async op backpressure per partition); **client-side**
+  `MAX_CONCURRENT_INVOCATIONS` set in the connection guide (caps in-flight client ops →
+  `HazelcastOverloadException` instead of OOM). Configure both; they protect different things.
 - Removal of the embedded Spring Hazelcast auto-configuration.
 
 ## Kubernetes / Helm chart
@@ -241,7 +254,9 @@ The guide specifies, per phase:
 Chart `helm/hazelcast-runtime/` provides:
 
 - **StatefulSet** — N members, stable identities, `HZ_PROFILE=k8s`, GRACEFUL shutdown,
-  `terminationGracePeriodSeconds` ≥ graceful wait, preStop cluster-safe gate.
+  bounded preStop cluster-safe gate, and
+  `terminationGracePeriodSeconds ≥ P(preStop max) + G(graceful.shutdown.max.wait) + buffer`
+  (values-validated).
 - **Headless Service** — peer discovery.
 - **Per-pod LoadBalancer/NodePort Services** — optional, phase-2 external clients;
   with per-pod `public-address` advertisement when smart routing is chosen. Toggled in values.
@@ -249,8 +264,15 @@ Chart `helm/hazelcast-runtime/` provides:
   `get,list` on `endpointslices` (`discovery.k8s.io`); **ClusterRole**/binding adding
   `nodes` (`get,list`) only if zone-aware or NodePort public discovery is used.
 - **Probes** — readiness `/hazelcast/health/ready`, liveness `/hazelcast/health/node-state`.
+  Align probe budgets with GC: liveness `timeoutSeconds`/`failureThreshold` must
+  tolerate the same pauses `hazelcast.max.no.heartbeat.seconds` is tuned for (else
+  kubelet kills a member the cluster still considers alive); readiness
+  `initialDelaySeconds`/`failureThreshold` must not flap a pod out during a long migration.
 - **Resources** — CPU/memory requests+limits; heap via `MaxRAMPercentage` (≤ ~8 GB).
-- **Pod anti-affinity** — `requiredDuringScheduling`, spread across nodes/zones.
+- **Pod anti-affinity** — `requiredDuringScheduling` on **hostname** (one member/node).
+  Zone spread via `topologySpreadConstraints` (soft) — not required anti-affinity —
+  so pods stay schedulable. ⚠️ Requires ≥ N schedulable nodes or pods hang Pending;
+  values gate member count against node count.
 - **PodDisruptionBudget** — `maxUnavailable: 1`.
 - **NetworkPolicy** — restrict member-port ingress to known clients.
 - **values-{local,vm,k8s}.yaml** — per-env member count, discovery, exposure, sizing.
