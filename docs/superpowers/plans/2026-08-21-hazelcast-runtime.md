@@ -366,7 +366,7 @@ Run:
 docker run --rm -e HZ_PROFILE=local -e HZ_MEMBERLIST=127.0.0.1 -e HZ_REST_DATA=true \
   hazelcast-runtime:local /opt/hazelcast/entrypoint.sh --render-only | head -40
 ```
-Expected: valid rendered YAML with `rest-api`, `HEALTH_CHECK`, `DATA`, `tcp-ip`, `member: "127.0.0.1"`.
+Expected: valid rendered YAML with `rest-api`, `HEALTH_CHECK`, `DATA`, `tcp-ip`, and a plain-string member entry `- "127.0.0.1"`.
 
 - [ ] **Step 4: Boot a single member and check health**
 
