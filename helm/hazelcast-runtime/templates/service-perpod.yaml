@@ -5,9 +5,12 @@ kind: Service
 metadata:
   name: {{ $.Release.Name }}-ext-{{ $i }}
   labels: {{- include "hzr.labels" $ | nindent 4 }}
-  annotations:
-    # cloud-specific: reserve a static IP and set as pod public-address (see connection-guide.md)
-    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+  {{- with $.Values.externalClient.annotations }}
+  # cloud-specific INTERNAL-LB annotations — MUST be set per provider or the LB
+  # provisions PUBLIC, exposing the unauthenticated OSS grid. Default empty = you
+  # must opt in consciously. See docs/connection-guide.md.
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ $.Values.externalClient.serviceType }}
   selector:

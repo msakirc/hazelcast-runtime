@@ -30,6 +30,12 @@ rbac:
 externalClient:
   enabled: false              # phase-2: per-pod LoadBalancer + public-address
   serviceType: LoadBalancer
+  # REQUIRED per cloud to keep the LB internal (else it provisions PUBLIC, exposing
+  # the unauthenticated OSS grid). Examples:
+  #   AWS:   service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+  #   GKE:   networking.gke.io/load-balancer-type: "Internal"
+  #   AKS:   service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  annotations: {}
 
 networkPolicy:
   enabled: true

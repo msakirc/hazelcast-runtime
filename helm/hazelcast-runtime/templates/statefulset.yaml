@@ -49,6 +49,9 @@ spec:
             - { name: HZ_BACKUP_COUNT, value: "{{ .Values.hazelcast.backupCount }}" }
             - { name: HZ_PARTITION_COUNT, value: "{{ .Values.hazelcast.partitionCount }}" }
             - { name: HZ_HEARTBEAT_SECONDS, value: "{{ .Values.hazelcast.heartbeatSeconds }}" }
+            # NOTE: this pod-env JAVA_OPTS OVERRIDES the Dockerfile ENV entirely, so it
+            # must carry every flag — including diagnostics.directory=/tmp (default
+            # /opt/hazelcast is root-owned -> FileNotFoundException spam on every pod).
             - name: JAVA_OPTS
               value: >-
                 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70
@@ -57,6 +60,7 @@ spec:
                 -Dhazelcast.graceful.shutdown.max.wait={{ .Values.shutdown.gracefulMaxWaitSeconds }}
                 -Dhazelcast.max.no.heartbeat.seconds={{ .Values.hazelcast.heartbeatSeconds }}
                 -Dhazelcast.diagnostics.enabled=true
+                -Dhazelcast.diagnostics.directory=/tmp
           lifecycle:
             preStop:
               exec:
@@ -68,6 +72,14 @@ spec:
                     while [ $(date +%s) -lt $end ]; do
                     code=$(wget -q -O /dev/null -S http://127.0.0.1:5701/hazelcast/health/cluster-safe 2>&1 | awk '/HTTP\//{print $2}' | tail -1);
                     [ "$code" = "200" ] && exit 0; sleep 3; done; exit 0
+          # startupProbe holds liveness off until the member has joined + first
+          # migration settles, so a slow cold-formation (API discovery via
+          # not-ready endpoints, waiting for sbpMinClusterSize peers) can't trip
+          # liveness. Gives up to 30*10s = 5min to first-Ready.
+          startupProbe:
+            httpGet: { path: /hazelcast/health/ready, port: 5701 }
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /hazelcast/health/ready, port: 5701 }
             initialDelaySeconds: 20

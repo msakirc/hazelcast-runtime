@@ -606,6 +606,7 @@ rbac:
 externalClient:
   enabled: false              # phase-2: per-pod LoadBalancer + public-address
   serviceType: LoadBalancer
+  annotations: {}             # REQUIRED per cloud to force INTERNAL LB (see values.yaml)
 
 networkPolicy:
   enabled: true
@@ -770,6 +771,9 @@ spec:
             - { name: HZ_BACKUP_COUNT, value: "{{ .Values.hazelcast.backupCount }}" }
             - { name: HZ_PARTITION_COUNT, value: "{{ .Values.hazelcast.partitionCount }}" }
             - { name: HZ_HEARTBEAT_SECONDS, value: "{{ .Values.hazelcast.heartbeatSeconds }}" }
+            # This pod-env JAVA_OPTS OVERRIDES the Dockerfile ENV entirely — it must
+            # carry EVERY flag, incl. diagnostics.directory=/tmp (default
+            # /opt/hazelcast is root-owned -> FileNotFoundException spam per pod).
             - name: JAVA_OPTS
               value: >-
                 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:MaxRAMPercentage=70
@@ -778,6 +782,7 @@ spec:
                 -Dhazelcast.graceful.shutdown.max.wait={{ .Values.shutdown.gracefulMaxWaitSeconds }}
                 -Dhazelcast.max.no.heartbeat.seconds={{ .Values.hazelcast.heartbeatSeconds }}
                 -Dhazelcast.diagnostics.enabled=true
+                -Dhazelcast.diagnostics.directory=/tmp
           lifecycle:
             preStop:
               exec:
@@ -789,6 +794,12 @@ spec:
                     while [ $(date +%s) -lt $end ]; do
                     code=$(wget -q -O /dev/null -S http://127.0.0.1:5701/hazelcast/health/cluster-safe 2>&1 | awk '/HTTP\//{print $2}' | tail -1);
                     [ "$code" = "200" ] && exit 0; sleep 3; done; exit 0
+          # startupProbe holds liveness off until join + first migration settle,
+          # so a slow cold-formation can't trip liveness (5min budget).
+          startupProbe:
+            httpGet: { path: /hazelcast/health/ready, port: 5701 }
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /hazelcast/health/ready, port: 5701 }
             initialDelaySeconds: 20
@@ -955,9 +966,11 @@ kind: Service
 metadata:
   name: {{ $.Release.Name }}-ext-{{ $i }}
   labels: {{- include "hzr.labels" $ | nindent 4 }}
-  annotations:
-    # cloud-specific: reserve a static IP and set as pod public-address (see connection-guide.md)
-    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+  {{- with $.Values.externalClient.annotations }}
+  # cloud-specific INTERNAL-LB annotations — MUST be set per provider or the LB
+  # provisions PUBLIC, exposing the unauthenticated OSS grid. Default empty.
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ $.Values.externalClient.serviceType }}
   selector:
