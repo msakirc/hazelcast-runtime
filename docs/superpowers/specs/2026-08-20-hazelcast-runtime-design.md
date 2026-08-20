@@ -1,7 +1,7 @@
 # Hazelcast Runtime — Design
 
 **Date:** 2026-08-20
-**Status:** Approved (design) + adversarial review folded in (v2), pending implementation plan
+**Status:** Approved (design), review GREEN after 3 rounds (v3), pending implementation plan
 **Owner:** Sakir
 
 ## Problem
@@ -208,7 +208,9 @@ signatures in the connection guide.
     `terminationGracePeriodSeconds ≥ P (preStop max) + G (graceful.shutdown.max.wait) + buffer`.
     Writing only `G ≤ grace` omits P and lets kubelet SIGKILL mid-migration →
     double-fault data loss with backup-count 1. Helm values enforce this sum + a
-    render-time check.
+    render-time check. Starting defaults: **P=30s, G=90s, buffer=30s → grace≥150s**
+    (tune G to migration time at real data size). `max.no.heartbeat.seconds` and the
+    liveness-probe budget derive from one GC-pause value in values (single source, no drift).
   - StatefulSet `RollingUpdate`, one member at a time (`maxUnavailable: 1`), PDB,
     `requiredDuringScheduling` anti-affinity (hostname).
 - ⚠️ **GC / heap headroom.** On-heap storage; per-entry overhead (metadata, near-cache,
